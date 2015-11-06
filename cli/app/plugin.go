@@ -43,11 +43,7 @@ func pre_plugin(p *project.Project, context *cli.Context) error {
 func post_plugin(p *project.Project, context *cli.Context) error {
 	event := getEvent(context)
 
-	if event != project.EventProjectUpStart {
-		return nil
-	}
-
-	if err := hooks.PopulateDNS(p, event); err != nil {
+	if err := hooks.PostHooks(p, event); err != nil {
 		logrus.Fatalf("Unable to populate dns entries. Error %v", err)
 	}
 	return nil
