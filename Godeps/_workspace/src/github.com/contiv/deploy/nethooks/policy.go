@@ -1,6 +1,8 @@
 package nethooks
 
 import (
+	"strconv"
+	s "strings"
 	log "github.com/Sirupsen/logrus"
 	"github.com/contiv/objmodel/contivModel"
 	"github.com/contiv/objmodel/objdb/modeldb"
@@ -10,6 +12,11 @@ import (
 const (
 	baseURL = "http://netmaster:9999/api/"
 )
+
+type policyCreateRec struct {
+	nextRuleId int
+	policyApplied bool
+}
 
 func getRulePath(tenantName, policyName, ruleID string) string {
 	return baseURL + "rules/" + tenantName + ":" + policyName + ":" + ruleID + "/"
@@ -31,8 +38,8 @@ func getAppPath(tenantName, appName string) string {
 	return baseURL + "apps/" + tenantName + ":" + appName + "/"
 }
 
-func getEpgPath(tenantName, groupName string) string {
-	return baseURL + "endpointGroups/" + tenantName + ":" + groupName + "/"
+func getEpgPath(tenantName, networkName, groupName string) string {
+	return baseURL + "endpointGroups/" + tenantName + ":" + networkName + ":" + groupName + "/"
 }
 
 func getRuleStr(ruleID int) string {
@@ -40,11 +47,11 @@ func getRuleStr(ruleID int) string {
 }
 
 func getInPolicyStr(projectName, svcName string) string {
-  return projectName + "_" + svcName + "-in"
+	return projectName + "_" + svcName + "-in"
 }
 
 func getOutPolicyStr(projectName, svcName string) string {
-  return projectName + "_" + svcName + "-out"
+	return projectName + "_" + svcName + "-out"
 }
 
 func getTenantName(labels map[string]string) string {
@@ -75,18 +82,27 @@ func getFullSvcName(p *project.Project, svcName string) string {
 	return p.Name + "_" + svcName + "." + NETWORK_DEFAULT
 }
 
-func getFromEpgName(p *project.Project, fromSvcName string) string {
-  if applyContractPolicyFlag {
-	  return getFullSvcName(p, fromSvcName)
-  }
+func getSvcName(p *project.Project, svcName string) string {
+	if p == nil {
+		return svcName
+	}
 
-  return ""
+	return p.Name + "_" + svcName
+}
+
+func getFromEpgName(p *project.Project, fromSvcName string) string {
+	if applyContractPolicyFlag {
+		return getSvcName(p, fromSvcName)
+	}
+
+	return ""
 }
 
 func getSvcLinks(p *project.Project) (map[string][]string, error) {
 	links := make(map[string][]string)
 
 	for svcName, svc := range p.Configs {
+		log.Debugf("svc %s === %+v ", svcName, svc)
 		svcLinks := svc.Links.Slice()
 		log.Debugf("found links for svc '%s' %#v ", svcName, svcLinks)
 		links[svcName] = svcLinks
@@ -98,16 +114,43 @@ func getSvcLinks(p *project.Project) (map[string][]string, error) {
 func clearSvcLinks(p *project.Project) error {
 	for svcName, svc := range p.Configs {
 		// if len(svc.Links.Slice()) > 0 {
-			svc.Links = project.NewMaporColonSlice([]string{})
-			log.Debugf("clearing links for svc '%s' %#v ", svcName, svc.Links)
+		svc.Links = project.NewMaporColonSlice([]string{})
+		log.Debugf("clearing links for svc '%s' %#v ", svcName, svc.Links)
 		// }
 	}
 	return nil
 }
 
+func extractPort(ps string) string {
+	lastCol := s.LastIndex(ps, ":")
+	if lastCol == -1 {
+		return ps
+	}
+
+	return ps[lastCol+1:]
+}
+
+func getSvcPorts(p *project.Project) (map[string][]string, error) {
+	sPorts := make(map[string][]string)
+	res := []string{}
+	for svcName, svc := range p.Configs {
+		if len(svc.Ports) > 0 {
+			pList := svc.Ports
+			for _, ps := range pList {
+				res = append(res, extractPort(ps))
+			}
+			sPorts[svcName] = res
+			log.Debugf("Service %v port %v", svcName, sPorts[svcName])
+		}
+	}
+
+	return sPorts, nil
+}
+
 func clearExposedPorts(p *project.Project) error {
 	for svcName, svc := range p.Configs {
 		if len(svc.Expose) > 0 {
+			log.Debugf("svc.Expose: %v svc.Ports %v", svc.Expose, svc.Ports)
 			svc.Expose = []string{}
 			log.Debugf("clearing exposed ports for svc '%s' %#v ", svcName, svc.Links)
 		}
@@ -143,7 +186,7 @@ func addInAcceptRule(tenantName, networkName, fromEpgName, policyName, protoName
 		EndpointGroup: fromEpgName,
 		Network:       networkName,
 		PolicyName:    policyName,
-		Port:		   portID,
+		Port:          portID,
 		Priority:      ruleID,
 		Protocol:      protoName,
 		RuleID:        getRuleStr(ruleID),
@@ -190,29 +233,42 @@ func addPolicy(tenantName, policyName string) error {
 	return nil
 }
 
-func addApp (tenantName string, p *project.Project) error {
+func addApp(tenantName string, p *project.Project) error {
 
 	log.Debugf("Entered addApp '%s':'%s' ", tenantName, p.Name)
 	app := &contivModel.App{
-		AppName: p.Name,
+		AppName:    p.Name,
 		TenantName: tenantName,
 	}
 
+	// Add services
 	for svcName := range p.Configs {
-		epgName := getFullSvcName(p, svcName)
-	        epg := &contivModel.EndpointGroup{
-	        	Key:       epgName,
-	        }
+		epgKey := TENANT_DEFAULT + ":" + NETWORK_DEFAULT + ":" + getSvcName(p, svcName)
+		epg := &contivModel.EndpointGroup{
+			Key: epgKey,
+		}
 
 		if err := modeldb.AddLinkSet(&app.LinkSets.Services, epg); err != nil {
 			log.Errorf("addApp:Unable to add link for service '%s'. Error %v", svcName, err)
 			return err
 		}
-	        log.Debugf("addApp add link for:'%s' ", epgName)
+		log.Debugf("addApp add link for:'%s' ", epgKey)
 	}
 
 	if err := httpPost(getAppPath(tenantName, p.Name), app); err != nil {
 		log.Errorf("Unable to post app to netmaster. Error: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+func deleteApp (tenantName string, p *project.Project) error {
+
+	log.Debugf("Entered deleteApp '%s':'%s' ", tenantName, p.Name)
+
+	if err := httpDelete(getAppPath(tenantName, p.Name)); err != nil {
+		log.Errorf("Unable to post app delete to netmaster. Error: %v", err)
 		return err
 	}
 
@@ -227,9 +283,9 @@ func addEpg(tenantName, networkName, epgName string, policies []string) error {
 		Policies:        policies,
 		TenantName:      tenantName,
 	}
-	if err := httpPost(getEpgPath(epg.TenantName, epg.GroupName), epg); err != nil {
+	if err := httpPost(getEpgPath(epg.TenantName, epg.NetworkName, epg.GroupName), epg); err != nil {
 		log.Errorf("Unable to create endpoint group. Tenant '%s' Network '%s' Epg '%s'. Error %v",
-      tenantName, networkName, epgName, err)
+			tenantName, networkName, epgName, err)
 		return err
 	}
 
@@ -240,7 +296,7 @@ func addEpgs(p *project.Project) error {
 	for svcName, svc := range p.Configs {
 		tenantName := getTenantName(svc.Labels.MapParts())
 		networkName := getNetworkName(svc.Labels.MapParts())
-		epgName := getFullSvcName(p, svcName)
+		epgName := getSvcName(p, svcName)
 
 		if err := addEpg(tenantName, networkName, epgName, []string{}); err != nil {
 			log.Errorf("Unable to add epg for service '%s'. Error %v", svcName, err)
@@ -250,14 +306,16 @@ func addEpgs(p *project.Project) error {
 	return nil
 }
 
-func applyDefaultPolicy(p *project.Project, policyApplied map[string]bool) error {
+func applyDefaultPolicy(p *project.Project, polRecs map[string]policyCreateRec) error {
 	for svcName, svc := range p.Configs {
 		tenantName := getTenantName(svc.Labels.MapParts())
 		networkName := getNetworkName(svc.Labels.MapParts())
-		toEpgName := getFullSvcName(p, svcName)
+		toEpgName := getSvcName(p, svcName)
 
-		if _, ok := policyApplied[svcName]; ok {
-			continue
+		if pR, ok := polRecs[svcName]; ok {
+			if pR.policyApplied {
+				continue
+			}
 		}
 
 		// add 'in' policy for the service tier
@@ -289,7 +347,6 @@ func applyDefaultPolicy(p *project.Project, policyApplied map[string]bool) error
 			return err
 		}
 
-
 		// add epg with in and out policies
 		if err := addEpg(tenantName, networkName, toEpgName, policies); err != nil {
 			log.Errorf("Unable to add epg. Error %v", err)
@@ -300,18 +357,75 @@ func applyDefaultPolicy(p *project.Project, policyApplied map[string]bool) error
 	return nil
 }
 
+func getPolicyRec(name string, polRecs map[string]policyCreateRec) policyCreateRec {
+	rec, ok := polRecs[name]
 
-func applyInPolicy(p *project.Project, fromSvcName, toSvcName string) error {
+	if ok {
+		return rec
+	}
+
+	rec = policyCreateRec{nextRuleId: 1, policyApplied: false}
+	polRecs[name] = rec
+	return rec
+}
+
+func applyExposePolicy(p *project.Project, expMap map[string][]string, polRecs map[string]policyCreateRec) error {
+	
+	tenantName := "default"
+	for toSvcName, spList := range expMap {
+		svc := p.Configs[toSvcName]
+		networkName := getNetworkName(svc.Labels.MapParts())
+		policyRec := getPolicyRec(toSvcName, polRecs)
+		ruleID := policyRec.nextRuleId
+		policyName := getInPolicyStr(p.Name, toSvcName)
+		// create the policy, if necessary
+		if !policyRec.policyApplied && (len(spList) > 0) {
+		    policies := []string{}
+			if err := addPolicy(tenantName, policyName); err != nil {
+				log.Errorf("Unable to add policy. Error %v ", err)
+				return err
+			}
+			toEpgName := getFullSvcName(p, toSvcName)
+			policies = append(policies, policyName)
+			if err := addEpg(tenantName, networkName, toEpgName, policies); err != nil {
+				log.Errorf("Unable to add epg. Error %v", err)
+				return err
+			}
+		}
+
+		for _, portID := range spList {
+			pNum, err := strconv.Atoi(portID)
+			if err != nil {
+				log.Errorf("Unable to get port number. Error %v ", err)
+			}
+
+			if err = addInAcceptRule(tenantName, networkName, "", policyName, "tcp", pNum, ruleID); err != nil {
+				log.Errorf("Unable to add accept rule. Error %v ", err)
+				return err
+			} else {
+				log.Debugf("Exposed %v : port %v", policyName, portID)
+			}
+			ruleID++
+		}
+		policyRec.nextRuleId = ruleID
+		polRecs[toSvcName] = policyRec
+        }
+
+	return nil
+}
+
+func applyInPolicy(p *project.Project, fromSvcName, toSvcName string, polRecs map[string]policyCreateRec) error {
 	svc := p.Configs[toSvcName]
 
+	policyRec := getPolicyRec(toSvcName, polRecs)
 	tenantName := getTenantName(svc.Labels.MapParts())
 	networkName := getNetworkName(svc.Labels.MapParts())
-	toEpgName := getFullSvcName(p, toSvcName)
+	toEpgName := getSvcName(p, toSvcName)
 
 	policyName := getInPolicyStr(p.Name, toSvcName)
-  fromEpgName := getFromEpgName(p, fromSvcName)
+	fromEpgName := getFromEpgName(p, fromSvcName)
 
-	ruleID := 1
+	ruleID := policyRec.nextRuleId
 	policies := []string{}
 
 	imageInfoList, err := getImageInfo(toSvcName)
@@ -342,9 +456,12 @@ func applyInPolicy(p *project.Project, fromSvcName, toSvcName string) error {
 
 	if err := addEpg(tenantName, networkName, toEpgName, policies); err != nil {
 		log.Errorf("Unable to add epg. Error %v", err)
-			return err
+		return err
 	}
 
+	policyRec.nextRuleId = ruleID
+	policyRec.policyApplied = true
+	polRecs[toSvcName] = policyRec
 	return nil
 }
 
@@ -380,7 +497,7 @@ func removePolicy(p *project.Project, svcName, dir string) error {
 		log.Errorf("Unable to delete '%s' policy. Error: %v", policyPath, err)
 	}
 
-  return nil
+	return nil
 }
 
 func removeEpg(p *project.Project, svcName string) error {
@@ -388,12 +505,13 @@ func removeEpg(p *project.Project, svcName string) error {
 
 	log.Debugf("Deleting Epg for service '%s' ", svcName)
 	tenantName := getTenantName(svc.Labels.MapParts())
-	epgName := getFullSvcName(p, svcName)
+	networkName := getNetworkName(svc.Labels.MapParts())
+	epgName := getSvcName(p, svcName)
 
-	epgPath := getEpgPath(tenantName, epgName)
+	epgPath := getEpgPath(tenantName, networkName, epgName)
 	if err := httpDelete(epgPath); err != nil {
 		log.Errorf("Unable to delete '%s' epg. Error: %v", epgPath, err)
 	}
 
-  return nil
+	return nil
 }
