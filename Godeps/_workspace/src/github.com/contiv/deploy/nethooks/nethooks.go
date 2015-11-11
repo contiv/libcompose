@@ -26,17 +26,26 @@ func applyLinksBasedPolicy(p *project.Project) error {
 		return err
 	}
 
-	policyApplied := make(map[string]bool)
+	policyRecs := make(map[string]policyCreateRec)
 	for fromSvcName, toSvcNames := range links {
 		for _, toSvcName := range toSvcNames {
 			log.Infof("Creating policy contract from service '%s' to services '%s'", fromSvcName, toSvcName)
-			if err := applyInPolicy(p, fromSvcName, toSvcName); err != nil {
+			if err := applyInPolicy(p, fromSvcName, toSvcName, policyRecs); err != nil {
 				log.Errorf("Unable to apply in-policy for service '%s'. Error %v", toSvcName, err)
 				return err
 			}
 
-			policyApplied[toSvcName] = true
 		}
+	}
+
+	spMap, err := getSvcPorts(p)
+	if err != nil {
+		log.Debugf("Unable to find exposed ports from service chains. Error %v", err)
+		return err
+	}
+	if err := applyExposePolicy(p, spMap, policyRecs); err != nil {
+		log.Errorf("Unable to apply expose-policy %v", err)
+		return err
 	}
 
 	if err := addApp(name, p); err != nil {
@@ -45,7 +54,7 @@ func applyLinksBasedPolicy(p *project.Project) error {
 	}
 
 	if applyDefaultPolicyFlag {
-		if err := applyDefaultPolicy(p, policyApplied); err != nil {
+		if err := applyDefaultPolicy(p, policyRecs); err != nil {
 			log.Errorf("Unable to apply policies for unspecified tiers. Error %v", err)
 			return err
 		}
@@ -80,6 +89,8 @@ func CreateNetConfig(p *project.Project) error {
 // DeleteNetConfig removes the netmaster configuraton
 func DeleteNetConfig(p *project.Project) error {
 	log.Debugf("Delete network for the project '%s' ", p.Name)
+	//TODO allow tenant name to be specified
+	name := "default"
 
 	for svcName, _ := range p.Configs {
 		if err := removeEpg(p, svcName); err != nil {
@@ -99,6 +110,10 @@ func DeleteNetConfig(p *project.Project) error {
 		}
 	}
 
+	if err := deleteApp(name, p); err != nil {
+		log.Errorf("Unable to delete app. Error %v", err)
+	}
+
 	return nil
 }
 
@@ -109,6 +124,23 @@ func AutoGenParams(p *project.Project) error {
 		}
 		if svc.Hostname == "" {
 			svc.Hostname = p.Name + "_" + svcName + "_1"
+		}
+		// Get the DNS Parameters
+		dnsAddr, err := getDnsInfo(NETWORK_DEFAULT, TENANT_DEFAULT)
+		if err != nil {
+			log.Errorf("Error getting DNS params. Err: %v", err)
+			return err
+		}
+
+		if svc.DNS.Len() == 0 {
+			svc.DNS = project.NewStringorslice(dnsAddr)
+		}
+		if svc.DNSSearch.Len() == 0 {
+			netDomain := NETWORK_DEFAULT + "." + TENANT_DEFAULT
+			tenantDomain := TENANT_DEFAULT
+
+			// DNS search option is [<network>.<tenant>, <tenant>]
+			svc.DNSSearch = project.NewStringorslice(netDomain, tenantDomain)
 		}
 	}
 
