@@ -227,6 +227,9 @@ func (c *Container) createContainer(imageName string) (*dockerclient.Container, 
 	config.Labels[SERVICE.Str()] = c.service.name
 	config.Labels[PROJECT.Str()] = c.service.context.Project.Name
 	config.Labels[HASH.Str()] = project.GetServiceHash(c.service)
+	if config.Hostname == "" {
+		config.Hostname = c.name
+	}
 
 	err = c.populateAdditionalHostConfig(&config.HostConfig)
 	if err != nil {
