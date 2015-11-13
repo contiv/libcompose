@@ -6,6 +6,12 @@ LIBCOMPOSE_ENVS := \
 	-e DOCKER_TEST_HOST \
 	-e TESTFLAGS
 
+LIBCOMPOSE_BUILDARGS := \
+	$(if $(HTTP_PROXY), --build-arg "HTTP_PROXY=$(HTTP_PROXY)") \
+	$(if $(HTTPS_PROXY), --build-arg "HTTPS_PROXY=$(HTTPS_PROXY)") \
+	$(if $(http_proxy), --build-arg "http_proxy=$(http_proxy)") \
+	$(if $(https_proxy), --build-arg "https_proxy=$(https_proxy)")
+
 # (default to no bind mount if DOCKER_HOST is set)
 BIND_DIR := $(if $(DOCKER_HOST),,bundles)
 LIBCOMPOSE_MOUNT := $(if $(BIND_DIR),-v "$(CURDIR)/$(BIND_DIR):/go/src/github.com/docker/libcompose/$(BIND_DIR)")
@@ -54,7 +60,7 @@ shell: build
 
 # Build the docker image, should be prior almost any other goals
 build: bundles
-	docker build -t "$(LIBCOMPOSE_IMAGE)" .
+	docker build -t "$(LIBCOMPOSE_IMAGE)" $(LIBCOMPOSE_BUILDARGS) .
 
 bundles:
 	mkdir bundles
