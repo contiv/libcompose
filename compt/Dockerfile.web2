@@ -1,0 +1,2 @@
+FROM fun4
+EXPOSE 5000
