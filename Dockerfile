@@ -1,5 +1,7 @@
 # This file describes the standard way to build libcompose, using docker
 FROM golang:1.4.2-cross
+ENV http_proxy http://proxy.esl.cisco.com:8080
+ENV https_proxy https://proxy.esl.cisco.com:8080
 
 RUN apt-get update && apt-get install -y \
     iptables \
@@ -11,7 +13,7 @@ RUN go get github.com/mitchellh/gox
 RUN go get github.com/aktau/github-release
 RUN go get github.com/tools/godep
 RUN go get golang.org/x/tools/cmd/cover
-RUN go get github.com/golang/lint/golint
+#RUN go get github.com/golang/lint/golint
 RUN go get golang.org/x/tools/cmd/vet
 
 # Which docker version to test on

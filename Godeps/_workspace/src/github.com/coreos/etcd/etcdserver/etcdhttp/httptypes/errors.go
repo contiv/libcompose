@@ -16,13 +16,8 @@ package httptypes
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
-
-	"github.com/coreos/pkg/capnslog"
-)
-
-var (
-	plog = capnslog.NewPackageLogger("github.com/coreos/etcd/etcdserver/etcdhttp", "httptypes")
 )
 
 type HTTPError struct {
@@ -35,17 +30,15 @@ func (e HTTPError) Error() string {
 	return e.Message
 }
 
-func (e HTTPError) WriteTo(w http.ResponseWriter) error {
+// TODO(xiangli): handle http write errors
+func (e HTTPError) WriteTo(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Code)
 	b, err := json.Marshal(e)
 	if err != nil {
-		plog.Panicf("marshal HTTPError should never fail (%v)", err)
+		log.Panicf("marshal HTTPError should never fail: %v", err)
 	}
-	if _, err := w.Write(b); err != nil {
-		return err
-	}
-	return nil
+	w.Write(b)
 }
 
 func NewHTTPError(code int, m string) *HTTPError {
